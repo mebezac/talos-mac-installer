@@ -4,15 +4,18 @@ name: build-installer
 # Installer image -> ghcr.io/<owner>/talos-mac/installer:<version>
 # ISO             -> attached to a GitHub Release named after the version.
 
+# Builds ONLY on tag push. Mirror a talos release by tagging this repo with the same
+# version (e.g. `git tag v1.13.5 && git push --tags`) when talos has an image bump.
+# Branch pushes and PRs never build (kernel compiles are expensive).
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       talos_version:
-        description: "Override TALOS_VERSION (else versions.env)"
+        description: "TALOS_VERSION to build (e.g. v1.13.5). Defaults to versions.env."
         required: false
         type: string
-  push:
-    paths: [versions.env, profile.yaml.tmpl, scripts/**, .github/workflows/build-installer.yaml]
 
 permissions:
   contents: write   # create releases / upload ISO
@@ -26,7 +29,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Kernel build + Talos artifacts blow past the stock 14GB runner disk.
       - name: Free disk space
@@ -43,15 +46,22 @@ jobs:
         run: |
           set -euo pipefail
           grep -vE '^\s*(#|$)' versions.env >> "$GITHUB_ENV"
+          # Version precedence: dispatch input > pushed tag > versions.env default.
+          override=""
           if [ -n "${{ inputs.talos_version }}" ]; then
+            override="${{ inputs.talos_version }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            override="${{ github.ref_name }}"
+          fi
+          if [ -n "$override" ]; then
             sed -i '/^TALOS_VERSION=/d' "$GITHUB_ENV"
-            echo "TALOS_VERSION=${{ inputs.talos_version }}" >> "$GITHUB_ENV"
+            echo "TALOS_VERSION=$override" >> "$GITHUB_ENV"
           fi
 
       - name: Set registry
         run: echo "REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/talos-mac" >> "$GITHUB_ENV"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
         with:
           buildkitd-flags: --allow-insecure-entitlement security.insecure
 
@@ -59,7 +69,7 @@ jobs:
         uses: imjasonh/setup-crane@v0.7
 
       - name: Login GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -71,7 +81,7 @@ jobs:
           scripts/build.sh
 
       - name: Upload ISO to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TALOS_VERSION }}
           name: Talos ${{ env.TALOS_VERSION }} (T2 Mac, GCC kernel)

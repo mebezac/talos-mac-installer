@@ -11,7 +11,10 @@
 set -euo pipefail
 
 : "${REGISTRY:?set REGISTRY, e.g. ghcr.io/<owner>/talos-mac}"
-: "${TALOS_VERSION:?}" "${PKGS_REF:?}" "${EXTENSIONS_REF:?}"
+: "${TALOS_VERSION:?}"
+# Extensions tag every patch release, so default to the Talos version. pkgs does NOT
+# tag per-patch — its ref is derived from the talos Makefile's PKGS pin (see build_talos_src).
+: "${EXTENSIONS_REF:=$TALOS_VERSION}"
 : "${PLATFORM:=linux/amd64}" "${ARCH:=amd64}"
 WORK="${WORK:-$(pwd)/_src}"
 OUT="${OUT:-$(pwd)/_out}"
@@ -36,6 +39,20 @@ clone() { # repo ref dir
   fi
   git -C "$WORK/$dir" fetch --tags --force origin
   git -C "$WORK/$dir" checkout --force "$ref"
+}
+
+# Clone talos first and read the exact pkgs commit it pins (PKGS ?= v1.13.0-N-gSHA).
+# The moving release-1.13 branch drifts ahead and its kernel checksum stops matching
+# the tarball on cdn.kernel.org — that was the "digest mismatch" failure.
+resolve_pkgs_ref() {
+  log "talos: resolve pkgs pin @ $TALOS_VERSION"
+  clone https://github.com/siderolabs/talos.git "$TALOS_VERSION" talos
+  local pin
+  pin="$(grep -E '^PKGS[[:space:]]*\?=' "$WORK/talos/Makefile" | head -1 | awk '{print $3}')"
+  [ -n "$pin" ] || { echo "could not read PKGS pin from talos Makefile" >&2; exit 1; }
+  PKGS_REF="${pin##*-g}"          # v1.13.0-36-g6b315f7 -> 6b315f7
+  export PKGS_REF
+  echo "pkgs pin: $pin -> ref $PKGS_REF"
 }
 
 # 1) Custom kernel: remove LLVM so it links with GCC/GNU-ld.
@@ -117,6 +134,7 @@ make_installer() {
 
 main() {
   setup_buildx
+  resolve_pkgs_ref
   build_pkgs_kernel
   build_extensions
   build_talos
