@@ -50,9 +50,10 @@ resolve_pkgs_ref() {
   local pin
   pin="$(grep -E '^PKGS[[:space:]]*\?=' "$WORK/talos/Makefile" | head -1 | awk '{print $3}')"
   [ -n "$pin" ] || { echo "could not read PKGS pin from talos Makefile" >&2; exit 1; }
-  PKGS_REF="${pin##*-g}"          # v1.13.0-36-g6b315f7 -> 6b315f7
-  export PKGS_REF
-  echo "pkgs pin: $pin -> ref $PKGS_REF"
+  PKGS_PIN="$pin"                 # v1.13.0-36-g6b315f7 (stock, non-dirty tag)
+  PKGS_REF="${pin##*-g}"          # -> 6b315f7 (git ref to check out pkgs at)
+  export PKGS_PIN PKGS_REF
+  echo "pkgs pin: $PKGS_PIN -> ref $PKGS_REF"
 }
 
 # cdn.kernel.org 404s the kernel tarball from GitHub Actions egress (kernel.org blocks
@@ -95,15 +96,34 @@ build_pkgs_kernel() {
   # tag the produced image with the dirty describe so downstream can reference it
   PKGS_TAG="$(git describe --tags --always --dirty --match 'v[0-9]*')"
   export PKGS_TAG
+  # The kernel compile is ~2h. If this exact image is already in the registry (from a
+  # prior run of the same commit), reuse it so downstream-only fixes iterate in minutes.
+  if [ "${FORCE_KERNEL:-0}" != "1" ] && crane manifest "$REGISTRY/pkgs/kernel:$PKGS_TAG" >/dev/null 2>&1; then
+    log "kernel $REGISTRY/pkgs/kernel:$PKGS_TAG already built — skipping compile (FORCE_KERNEL=1 to rebuild)"
+    cd - >/dev/null; return
+  fi
   make kernel-olddefconfig PLATFORM="$PLATFORM"
   make kernel REGISTRY="$REGISTRY" USERNAME=pkgs PUSH=true PLATFORM="$PLATFORM"
   echo "PKGS_TAG=$PKGS_TAG"          # -> $REGISTRY/pkgs/kernel:$PKGS_TAG
   cd - >/dev/null
 }
 
+# i915 pulls BOTH kernel and linux-firmware from a single PKGS_PREFIX. kernel is our
+# custom build; linux-firmware is stock (GPU blobs, kernel-independent). Mirror the
+# stock firmware into our prefix under the dirty tag so the one shared prefix resolves.
+mirror_pkg_deps() {
+  local dst="$REGISTRY/pkgs/linux-firmware:$PKGS_TAG"
+  if crane manifest "$dst" >/dev/null 2>&1; then
+    log "linux-firmware already mirrored ($dst)"; return
+  fi
+  log "mirror stock linux-firmware -> $dst"
+  crane copy "ghcr.io/siderolabs/linux-firmware:$PKGS_PIN" "$dst"
+}
+
 # 2) i915 recompiled against the custom kernel, retagged to a deterministic ref.
 build_extensions() {
   log "extensions: i915 (against custom kernel) @ $EXTENSIONS_REF"
+  mirror_pkg_deps
   clone https://github.com/siderolabs/extensions.git "$EXTENSIONS_REF" extensions
   cd "$WORK/extensions"
   make i915 TAG="$TALOS_VERSION" REGISTRY="$REGISTRY" USERNAME=extensions PUSH=true \
@@ -123,11 +143,14 @@ build_talos() {
   log "talos: imager + installer-base @ $TALOS_VERSION"
   clone https://github.com/siderolabs/talos.git "$TALOS_VERSION" talos
   cd "$WORK/talos"
+  # Pull every pkg (containerd, grub, iptables, ...) from STOCK siderolabs at the pin;
+  # override ONLY the kernel to our custom GCC-linked build. Non-kernel pkgs are
+  # userspace and kernel-independent, so stock + custom kernel is correct.
   make kernel initramfs imager installer-base \
     REGISTRY="$REGISTRY" USERNAME=imager PUSH=true TAG="$TALOS_VERSION" \
     PKG_KERNEL="$REGISTRY/pkgs/kernel:$PKGS_TAG" \
     PLATFORM="$PLATFORM" INSTALLER_ARCH="$ARCH" \
-    PKGS="$PKGS_TAG" PKGS_PREFIX="$REGISTRY/pkgs"
+    PKGS="$PKGS_PIN" PKGS_PREFIX="ghcr.io/siderolabs"
   cd - >/dev/null
 }
 
