@@ -76,7 +76,9 @@ repoint_kernel_source() {
   sed -i -E "s|^([[:space:]]*linux_sha512:).*|\1 ${s512}|" Pkgfile
   # Repoint the download URL (keep the {{ .linux_version }} template) and make the
   # untar codec-agnostic — GNU/busybox tar auto-detect gzip-vs-xz from the magic bytes.
-  sed -i -E "s|https://cdn\.kernel\.org[^\"']*\.tar\.xz|${KMIRROR}/v{{ .linux_version }}.tar.gz|" kernel/prepare/pkg.yaml
+  # NB: the url line embeds a {{ regexReplaceAll "..." }} with double-quotes, so match
+  # greedily to the trailing .tar.xz rather than a quote-excluding class.
+  sed -i -E "s|https://cdn\.kernel\.org.*\.tar\.xz|${KMIRROR}/v{{ .linux_version }}.tar.gz|" kernel/prepare/pkg.yaml
   sed -i 's/tar -xJf linux.tar.xz/tar -xf linux.tar.xz/' kernel/prepare/pkg.yaml
   echo "kernel $ver sha256=$s256"
   grep -nE 'gregkh|tar -xf linux' kernel/prepare/pkg.yaml || true
