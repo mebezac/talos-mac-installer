@@ -1,0 +1,39 @@
+# Imager profile — rendered by scripts/gen-profile.sh (envsubst).
+# Two artifacts are produced from this same profile by flipping OUTPUT_KIND:
+#   - kind: iso        -> metal-${ARCH}.iso   (USB fresh install)
+#   - kind: installer  -> installer image     (talosctl upgrade --image ...)
+arch: ${ARCH}
+platform: metal
+secureboot: false
+name: Talos
+version: ${TALOS_VERSION}
+input:
+  kernel:
+    path: /usr/install/${ARCH}/vmlinuz
+  initramfs:
+    path: /usr/install/${ARCH}/initramfs.xz
+  sdStub:
+    path: /usr/install/${ARCH}/systemd-stub.efi
+  sdBoot:
+    path: /usr/install/${ARCH}/systemd-boot.efi
+  baseInstaller:
+    # installer-base built from siderolabs/talos against the CUSTOM (GCC-linked) kernel
+    imageRef: ${REGISTRY}/imager/installer-base:${TALOS_VERSION}
+  systemExtensions:
+    # i915 recompiled against the custom kernel (vermagic/module-signing must match)
+    - imageRef: ${REGISTRY}/extensions/i915:${TALOS_VERSION}
+    # stock userspace/firmware extensions (no kernel modules -> no rebuild)
+    - imageRef: ${EXT_INTEL_UCODE}
+    - imageRef: ${EXT_ISCSI_TOOLS}
+    - imageRef: ${EXT_UTIL_LINUX}
+    - imageRef: ${EXT_THUNDERBOLT}
+output:
+  kind: ${OUTPUT_KIND}
+  outFormat: ${OUTPUT_FORMAT}
+customization:
+  # Preserve the talmac schematic's kernel args. pcie_ports=compat is what makes the
+  # Apple NVMe usable; intel_iommu/iommu match the original i915 schematic.
+  extraKernelArgs:
+    - intel_iommu=on
+    - iommu=pt
+    - pcie_ports=compat

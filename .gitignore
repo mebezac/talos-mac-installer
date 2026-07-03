@@ -1,0 +1,5 @@
+_src/
+_out/
+*.iso
+*.log
+profile.*.yaml
