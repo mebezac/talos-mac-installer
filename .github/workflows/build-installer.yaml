@@ -71,7 +71,7 @@ jobs:
           scripts/build.sh
 
       - name: Upload ISO to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TALOS_VERSION }}
           name: Talos ${{ env.TALOS_VERSION }} (T2 Mac, GCC kernel)
