@@ -55,10 +55,39 @@ resolve_pkgs_ref() {
   echo "pkgs pin: $pin -> ref $PKGS_REF"
 }
 
+# kernel.org purges superseded point releases from cdn.kernel.org, so the exact
+# linux_version a talos release pinned is usually 404 by the time we build (that was
+# the "digest mismatch": cdn served a 404 page instead of the tarball). Bump to the
+# current point release in the same longterm series and recompute its hashes here,
+# where the runner can reach cdn. Self-heals on every kernel.org rotation.
+autobump_kernel() {
+  cd "$WORK/pkgs"
+  local cur series major latest url s256 s512
+  cur="$(grep -E '^[[:space:]]*linux_version:' Pkgfile | awk '{print $2}')"
+  series="${cur%.*}"        # 6.18.36 -> 6.18
+  major="${cur%%.*}"        # 6
+  latest="$(curl -fsSL https://www.kernel.org/releases.json \
+    | python3 -c "import json,sys;print(next((r['version'] for r in json.load(sys.stdin)['releases'] if r['version'].startswith('$series.')), ''))")"
+  [ -n "$latest" ] || { echo "could not resolve latest $series.x kernel" >&2; exit 1; }
+  if [ "$latest" = "$cur" ]; then log "kernel $cur is current; no bump"; cd - >/dev/null; return; fi
+  url="https://cdn.kernel.org/pub/linux/kernel/v${major}.x/linux-${latest}.tar.xz"
+  log "kernel bump $cur -> $latest (pinned release purged from cdn)"
+  curl -fSL --retry 4 --retry-delay 3 -o /tmp/linux.tar.xz "$url"
+  s256="$(sha256sum /tmp/linux.tar.xz | awk '{print $1}')"
+  s512="$(sha512sum /tmp/linux.tar.xz | awk '{print $1}')"
+  sed -i -E "s|^([[:space:]]*linux_version:).*|\1 ${latest}|" Pkgfile
+  sed -i -E "s|^([[:space:]]*linux_sha256:).*|\1 ${s256}|" Pkgfile
+  sed -i -E "s|^([[:space:]]*linux_sha512:).*|\1 ${s512}|" Pkgfile
+  rm -f /tmp/linux.tar.xz
+  echo "Pkgfile now: $(grep -E '^[[:space:]]*linux_(version|sha256):' Pkgfile | tr -s ' ')"
+  cd - >/dev/null
+}
+
 # 1) Custom kernel: remove LLVM so it links with GCC/GNU-ld.
 build_pkgs_kernel() {
   log "pkgs: kernel (LLVM removed) @ $PKGS_REF"
   clone https://github.com/siderolabs/pkgs.git "$PKGS_REF" pkgs
+  autobump_kernel
   cd "$WORK/pkgs"
   sed -i '/^\s*LLVM:\s*1/d' kernel/build/pkg.yaml
   # tag the produced image with the dirty describe so downstream can reference it
