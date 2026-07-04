@@ -13,7 +13,7 @@ set -euo pipefail
 : "${REGISTRY:?set REGISTRY, e.g. ghcr.io/<owner>/talos-mac}"
 : "${TALOS_VERSION:?}"
 # Extensions tag every patch release, so default to the Talos version. pkgs does NOT
-# tag per-patch — its ref is derived from the talos Makefile's PKGS pin (see build_talos_src).
+# tag per-patch — its ref is derived from the talos Makefile's PKGS pin (resolve_pkgs_ref).
 : "${EXTENSIONS_REF:=$TALOS_VERSION}"
 : "${PLATFORM:=linux/amd64}" "${ARCH:=amd64}"
 WORK="${WORK:-$(pwd)/_src}"

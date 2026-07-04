@@ -32,8 +32,8 @@ output:
   kind: ${OUTPUT_KIND}
   outFormat: ${OUTPUT_FORMAT}
 customization:
-  # Preserve the talmac schematic's kernel args. pcie_ports=compat is what makes the
-  # Apple NVMe usable; intel_iommu/iommu match the original i915 schematic.
+  # Kernel args for the T2 Mac mini. pcie_ports=compat is what makes the Apple NVMe
+  # usable; intel_iommu/iommu=pt are the usual i915 args.
   extraKernelArgs:
     - intel_iommu=on
     - iommu=pt

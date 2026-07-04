@@ -14,79 +14,85 @@ remains.
 
 **The fix is one line:** drop `LLVM: 1` from the kernel package so the kernel (and its
 EFI stub) links with **GCC + GNU ld**, which the Mac firmware accepts. Everything else
-in the build is just rebuilding what depends on that custom kernel.
+in the build just rebuilds what depends on that custom kernel.
 
 Because the *stub* is the problem, a GCC kernel boots fine under **UKI/systemd-boot** —
-so this **retires the GRUB v1.9.6 → ladder dance entirely**. Point a node at this
-installer and `talosctl upgrade` like any other node.
+there's no need for GRUB or a version ladder. Point a node at this installer and
+`talosctl upgrade` it like any other node.
 
 ## What the build does
 
-1. **pkgs** — clone `siderolabs/pkgs`, `sed` out `LLVM: 1`, `make kernel` → GHCR
-   (`.../pkgs/kernel:<version>-dirty`).
-2. **extensions** — recompile **i915** against the custom kernel (out-of-tree `.ko`
-   modules must match the new build), retag to `.../extensions/i915:<version>`.
-   Other schematic extensions (intel-ucode, iscsi-tools, util-linux-tools, thunderbolt)
-   are firmware/userspace only → pulled stock, no rebuild.
-3. **talos** — `make imager installer-base` with `PKG_KERNEL=<custom>` → GHCR.
+1. **kernel** — clone `siderolabs/pkgs` at the exact commit the target Talos release
+   pins, `sed` out `LLVM: 1`, `make kernel` → GHCR (`.../pkgs/kernel:<pkgs>-dirty`).
+   The kernel source is pulled from `github.com/gregkh/linux` (see [notes](#how-it-works)).
+2. **module extensions** — rebuild **i915** and **thunderbolt** against the custom
+   kernel and retag to `.../extensions/<name>:<talos-version>`. Both ship signed `.ko`
+   modules; the kernel enforces module signatures with the build's own key, so stock
+   images (signed with Sidero's key) would be rejected. Firmware/userspace extensions
+   (`intel-ucode`, `iscsi-tools`, `util-linux-tools`) have no modules and are pulled
+   stock at the Image Factory's blessed tags.
+3. **talos** — `make imager installer-base`, pulling every stock pkg from
+   `ghcr.io/siderolabs` and overriding only `PKG_KERNEL` with the custom build → GHCR.
 4. **imager** — render `profile.yaml.tmpl` twice:
    - `kind: iso` → `metal-amd64.iso`, attached to a GitHub Release.
-   - `kind: installer` → `ghcr.io/<owner>/talos-mac/installer:<version>`.
+   - `kind: installer` → `ghcr.io/<owner>/talos-mac/installer:<talos-version>`.
 
 ## Usage
 
-1. Push this repo to GitHub. Enable GHCR packages.
-2. Set `TALOS_VERSION` in `versions.env`.
-3. Run the **build-installer** workflow (auto-runs on push, or dispatch with a version
-   override).
-4. Consume the outputs in `home-cluster` (below).
+1. Fork/clone to GitHub. GHCR publishing uses the built-in `GITHUB_TOKEN`.
+2. Set `TALOS_VERSION` in `versions.env` (and the stock extension tags — the values the
+   Image Factory resolves for that release; see the comments in that file).
+3. **Tag the repo with the Talos version to trigger a build:**
+   ```bash
+   git tag v1.13.5 && git push --tags
+   ```
+   Builds run on tag push only. Use the **build-installer** workflow's
+   `workflow_dispatch` (optionally with a `talos_version` input) to test without tagging.
 
-Local run (Linux/amd64 + Docker only — not macOS):
+The kernel compile is ~2h on a stock runner; the kernel / extension / talos steps each
+skip if their image already exists (`FORCE_KERNEL`/`FORCE_EXT`/`FORCE_TALOS=1` to
+rebuild), so re-runs of the same version finish in minutes.
+
+Local run (Linux/amd64 + Docker, logged in to your GHCR namespace — not macOS):
 ```bash
 set -a; . versions.env; set +a
 export REGISTRY=ghcr.io/<owner>/talos-mac
 scripts/build.sh
 ```
 
-## Wiring into home-cluster
+## Using the output
 
-Point the talmac nodes at the custom installer instead of the factory schematic. In
-`kubernetes/bootstrap/talos/talconfig.yaml`, for each talmac node:
+Fresh install: download `metal-amd64.iso` from the matching Release, `dd` it to a USB
+stick, boot the Mac holding ⌥ → **EFI Boot** → Talos maintenance mode, then apply your
+machine config.
 
-```yaml
-  - hostname: "talmac-02"
-    talosImageURL: ghcr.io/<owner>/talos-mac/installer   # talhelper appends :<talosVersion>
-```
-
-Then the normal flow works — no GRUB ladder, no per-node version pin:
+In-place (once a node is already on the custom image):
 ```bash
-# fresh install: write metal-amd64.iso (release asset) to USB, boot it, apply-config
-# in-place upgrade:
-talosctl -n 10.25.30.43 upgrade \
+talosctl -n <node-ip> upgrade \
   --image ghcr.io/<owner>/talos-mac/installer:v1.13.5 --preserve
 ```
 
-Delete the `patches/talmac-*/machine-install.yaml` version pins once nodes track
-`talosVersion: v1.13.5` globally.
+With talhelper, set the node's `talosImageURL` to `ghcr.io/<owner>/talos-mac/installer`
+(talhelper appends `:${talosVersion}`) so it tracks the version like any other node.
+Never point a T2 Mac at `factory.talos.dev` for v1.13+ — that's the hanging stock kernel.
 
-## First-run caveats (things most likely to need a tweak)
+## How it works
 
-- **Disk space** on `ubuntu-latest` is tight even after the cleanup step. If the kernel
-  build fails on `ENOSPC`, switch to a larger runner.
-- **pkgs image tag** is `git describe --dirty`. On a branch head not sitting exactly on
-  a tag it may be `v1.13.0-N-gsha-dirty`; the script captures it dynamically, so it's
-  fine, but the string in GHCR won't be pretty.
-- **i915 auto-tag capture** — extensions tag images with a build datestamp. The script
-  greps the build log for the pushed ref then `crane copy`s it to a clean
-  `:<version>` tag. If the grep misses (upstream log format change), fix the pattern in
-  `scripts/build.sh:build_extensions`.
-- **installer tarball** — `make_installer` assumes imager writes `installer-*.tar` into
-  `_out`. If the imager output name/format differs on your Talos version, adjust the
-  `crane push` line (may need `skopeo copy oci-archive:...`).
-- **thunderbolt** — pulled stock. If your USB enclosure / smarthome adapter regresses
-  after upgrade, rebuild `thunderbolt` like i915 and reference the custom image in
-  `versions.env`.
-- **EXT_* digests** — pin to `@sha256:...` before trusting in-cluster.
+A few non-obvious things the pipeline handles:
+
+- **pkgs ref.** `siderolabs/pkgs` isn't tagged per patch release; the build reads the
+  exact pinned commit from the target Talos release's `Makefile` (`PKGS ?= …`), so the
+  kernel config/patches always match.
+- **Kernel source.** `cdn.kernel.org` 404s the tarball from GitHub Actions egress (the
+  shared CI IP ranges are blocked), which surfaced as a buildkit "digest mismatch". The
+  build sources the exact stable tag from `github.com/gregkh/linux` (the stable tree's
+  GitHub mirror — same source tree as the official tarball, so patches/config apply) and
+  recomputes the checksums, mirroring Talos' own "kspp from GitHub archive" pattern.
+- **Extension deps.** i915 pulls both `kernel` (custom) and `linux-firmware` (stock) from
+  one shared `PKGS_PREFIX`; the build mirrors stock `linux-firmware` into the custom
+  prefix so the single prefix resolves both.
+- **Installer output.** `kind: installer` requires `outFormat: raw` (passthrough); an
+  empty value decodes to `unknown` and the imager errors.
 
 ## Layout
 
