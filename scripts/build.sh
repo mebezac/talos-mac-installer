@@ -120,21 +120,28 @@ mirror_pkg_deps() {
   crane copy "ghcr.io/siderolabs/linux-firmware:$PKGS_PIN" "$dst"
 }
 
-# 2) i915 recompiled against the custom kernel, retagged to a deterministic ref.
+# 2) Kernel-module extensions rebuilt against the custom kernel. These ship signed
+# .ko files; our kernel enforces module signatures with OUR build's key, so a stock
+# image (signed with siderolabs' key) would be rejected — they must be rebuilt here.
+# Firmware/userspace extensions (intel-ucode, iscsi-tools, util-linux-tools) have no
+# modules and are pulled stock in the imager profile.
+MODULE_EXTS=(i915 thunderbolt)
 build_extensions() {
-  log "extensions: i915 (against custom kernel) @ $EXTENSIONS_REF"
-  mirror_pkg_deps
+  mirror_pkg_deps   # linux-firmware, needed by i915
   clone https://github.com/siderolabs/extensions.git "$EXTENSIONS_REF" extensions
   cd "$WORK/extensions"
-  make i915 TAG="$TALOS_VERSION" REGISTRY="$REGISTRY" USERNAME=extensions PUSH=true \
-    PLATFORM="$PLATFORM" PKGS="$PKGS_TAG" PKGS_PREFIX="$REGISTRY/pkgs" \
-    2>&1 | tee "$OUT/i915-build.log"
-  # extensions auto-tag with a datestamp (e.g. 20260410-v1.13.0); capture and pin it
-  local built
-  built="$(grep -oE "$REGISTRY/extensions/i915:[A-Za-z0-9._-]+" "$OUT/i915-build.log" | tail -1)"
-  [ -n "$built" ] || { echo "could not capture i915 image ref from build log" >&2; exit 1; }
-  log "retag i915 $built -> :$TALOS_VERSION"
-  crane copy "$built" "$REGISTRY/extensions/i915:$TALOS_VERSION"
+  local ext built
+  for ext in "${MODULE_EXTS[@]}"; do
+    log "extensions: $ext (against custom kernel) @ $EXTENSIONS_REF"
+    make "$ext" TAG="$TALOS_VERSION" REGISTRY="$REGISTRY" USERNAME=extensions PUSH=true \
+      PLATFORM="$PLATFORM" PKGS="$PKGS_TAG" PKGS_PREFIX="$REGISTRY/pkgs" \
+      2>&1 | tee "$OUT/$ext-build.log"
+    # extensions self-tag (datestamp-version); capture the pushed ref and pin to :VERSION
+    built="$(grep -oE "$REGISTRY/extensions/$ext:[A-Za-z0-9._-]+" "$OUT/$ext-build.log" | tail -1)"
+    [ -n "$built" ] || { echo "could not capture $ext image ref from build log" >&2; exit 1; }
+    log "retag $ext $built -> :$TALOS_VERSION"
+    crane copy "$built" "$REGISTRY/extensions/$ext:$TALOS_VERSION"
+  done
   cd - >/dev/null
 }
 
@@ -165,7 +172,7 @@ make_iso() {
   OUTPUT_KIND=iso OUTPUT_FORMAT=raw REGISTRY="$REGISTRY" ARCH="$ARCH" \
     TALOS_VERSION="$TALOS_VERSION" \
     EXT_INTEL_UCODE="$EXT_INTEL_UCODE" EXT_ISCSI_TOOLS="$EXT_ISCSI_TOOLS" \
-    EXT_UTIL_LINUX="$EXT_UTIL_LINUX" EXT_THUNDERBOLT="$EXT_THUNDERBOLT" \
+    EXT_UTIL_LINUX="$EXT_UTIL_LINUX" \
     scripts/gen-profile.sh | imager
   ls -lh "$OUT"/*.iso
 }
@@ -176,7 +183,7 @@ make_installer() {
   OUTPUT_KIND=installer OUTPUT_FORMAT="" REGISTRY="$REGISTRY" ARCH="$ARCH" \
     TALOS_VERSION="$TALOS_VERSION" \
     EXT_INTEL_UCODE="$EXT_INTEL_UCODE" EXT_ISCSI_TOOLS="$EXT_ISCSI_TOOLS" \
-    EXT_UTIL_LINUX="$EXT_UTIL_LINUX" EXT_THUNDERBOLT="$EXT_THUNDERBOLT" \
+    EXT_UTIL_LINUX="$EXT_UTIL_LINUX" \
     scripts/gen-profile.sh | imager
   # imager writes an OCI/docker tarball into /out; push it under a clean name.
   local tar

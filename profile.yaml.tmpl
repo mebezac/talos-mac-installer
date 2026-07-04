@@ -20,13 +20,14 @@ input:
     # installer-base built from siderolabs/talos against the CUSTOM (GCC-linked) kernel
     imageRef: ${REGISTRY}/imager/installer-base:${TALOS_VERSION}
   systemExtensions:
-    # i915 recompiled against the custom kernel (vermagic/module-signing must match)
+    # kernel-module extensions rebuilt against the custom kernel (module signatures
+    # must be made with our kernel's key, which the kernel enforces at load)
     - imageRef: ${REGISTRY}/extensions/i915:${TALOS_VERSION}
-    # stock userspace/firmware extensions (no kernel modules -> no rebuild)
+    - imageRef: ${REGISTRY}/extensions/thunderbolt:${TALOS_VERSION}
+    # stock firmware/userspace extensions (no kernel modules -> no rebuild)
     - imageRef: ${EXT_INTEL_UCODE}
     - imageRef: ${EXT_ISCSI_TOOLS}
     - imageRef: ${EXT_UTIL_LINUX}
-    - imageRef: ${EXT_THUNDERBOLT}
 output:
   kind: ${OUTPUT_KIND}
   outFormat: ${OUTPUT_FORMAT}

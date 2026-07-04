@@ -12,6 +12,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${REGISTRY:?}" "${ARCH:?}" "${TALOS_VERSION:?}"
 
 export OUTPUT_KIND OUTPUT_FORMAT REGISTRY ARCH TALOS_VERSION \
-       EXT_INTEL_UCODE EXT_ISCSI_TOOLS EXT_UTIL_LINUX EXT_THUNDERBOLT
+       EXT_INTEL_UCODE EXT_ISCSI_TOOLS EXT_UTIL_LINUX
 
 envsubst < "${here}/profile.yaml.tmpl"
