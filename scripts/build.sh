@@ -188,7 +188,9 @@ make_iso() {
 # 4b) Installer image for `talosctl upgrade --image` and talconfig talosImageURL.
 make_installer() {
   log "imager: installer image -> $REGISTRY/installer:$TALOS_VERSION"
-  OUTPUT_KIND=installer OUTPUT_FORMAT="" REGISTRY="$REGISTRY" ARCH="$ARCH" \
+  # outFormat=raw = passthrough (no extra compression); the asset stays installer-*.tar.
+  # An empty/absent outFormat decodes to "unknown" and the imager errors.
+  OUTPUT_KIND=installer OUTPUT_FORMAT=raw REGISTRY="$REGISTRY" ARCH="$ARCH" \
     TALOS_VERSION="$TALOS_VERSION" \
     EXT_INTEL_UCODE="$EXT_INTEL_UCODE" EXT_ISCSI_TOOLS="$EXT_ISCSI_TOOLS" \
     EXT_UTIL_LINUX="$EXT_UTIL_LINUX" \
