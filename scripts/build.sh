@@ -132,6 +132,9 @@ build_extensions() {
   cd "$WORK/extensions"
   local ext built
   for ext in "${MODULE_EXTS[@]}"; do
+    if [ "${FORCE_EXT:-0}" != "1" ] && crane manifest "$REGISTRY/extensions/$ext:$TALOS_VERSION" >/dev/null 2>&1; then
+      log "extension $ext:$TALOS_VERSION already built — skipping (FORCE_EXT=1 to rebuild)"; continue
+    fi
     log "extensions: $ext (against custom kernel) @ $EXTENSIONS_REF"
     make "$ext" TAG="$TALOS_VERSION" REGISTRY="$REGISTRY" USERNAME=extensions PUSH=true \
       PLATFORM="$PLATFORM" PKGS="$PKGS_TAG" PKGS_PREFIX="$REGISTRY/pkgs" \
@@ -147,6 +150,11 @@ build_extensions() {
 
 # 3) Talos boot artifacts (kernel/initramfs/installer-base/imager) with the custom kernel.
 build_talos() {
+  # make_iso/make_installer only RUN the imager image, so if it's already published we
+  # can skip rebuilding the talos artifacts and iterate the imager steps in minutes.
+  if [ "${FORCE_TALOS:-0}" != "1" ] && crane manifest "$REGISTRY/imager/imager:$TALOS_VERSION" >/dev/null 2>&1; then
+    log "imager $REGISTRY/imager/imager:$TALOS_VERSION already built — skipping talos build (FORCE_TALOS=1 to rebuild)"; return
+  fi
   log "talos: imager + installer-base @ $TALOS_VERSION"
   clone https://github.com/siderolabs/talos.git "$TALOS_VERSION" talos
   cd "$WORK/talos"

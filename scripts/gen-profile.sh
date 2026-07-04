@@ -14,4 +14,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export OUTPUT_KIND OUTPUT_FORMAT REGISTRY ARCH TALOS_VERSION \
        EXT_INTEL_UCODE EXT_ISCSI_TOOLS EXT_UTIL_LINUX
 
-envsubst < "${here}/profile.yaml.tmpl"
+# outFormat only applies to disk-image kinds (iso uses "raw"); for kind=installer it
+# must be absent — an empty value makes the imager error "unknown output format".
+envsubst < "${here}/profile.yaml.tmpl" | sed -E '/^[[:space:]]*outFormat:[[:space:]]*$/d'
