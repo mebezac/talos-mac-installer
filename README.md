@@ -1,26 +1,69 @@
 # talos-mac-installer
 
-Builds a **GCC-linked** Talos installer image + USB ISO so 2018 T2 Intel Mac minis
-(`Macmini8,1`) cold-boot Talos **v1.13+**. Publishes to GHCR via GitHub Actions.
+> [!IMPORTANT]
+> **This repository is archived and no longer needed.** Talos **v1.14.2** and later
+> boot on 2018 T2 Intel Mac minis (`Macmini8,1`) out of the box. Use the stock Image
+> Factory images instead.
 
-## Why this exists
+## What to do instead
 
-Talos v1.13's kernel is linked with **Clang + LLD/ThinLTO**. Apple's Intel EFI
-firmware validates PE binaries and refuses to hand off to an LLD-linked EFI stub, so
-the node hangs at the TALOS splash on a cold boot. This is not Talos-specific — any
-distro with an LLD-linked kernel hits it (siderolabs/talos#13579, #13231). Kernel 6.11
-disabled LTO in `libstub` for exactly this class of EFI issues; the LLVM link is what
-remains.
+1. Create an [Image Factory](https://factory.talos.dev) schematic for **v1.14.2 or
+   later** with the extensions you need. The stock extensions work now, including
+   `i915` and `thunderbolt`, so nothing has to be rebuilt. Typical set: `i915`,
+   `thunderbolt`, `intel-ucode`, `iscsi-tools`, `util-linux-tools`.
+2. **Fresh install:** download the factory `metal-amd64.iso`, `dd` it to a USB stick,
+   hold ⌥ at power-on, then choose **EFI Boot**.
+3. **Nodes already running this repo's installer:** upgrade straight to the factory
+   installer:
+   ```bash
+   talosctl -n <node-ip> upgrade \
+     --image factory.talos.dev/installer/<schematic-id>:v1.14.2 --preserve
+   ```
+   With talhelper, change `talosImageURL` back to
+   `factory.talos.dev/installer/<schematic-id>`.
 
-**The fix is one line:** drop `LLVM: 1` from the kernel package so the kernel (and its
-EFI stub) links with **GCC + GNU ld**, which the Mac firmware accepts. Everything else
-in the build just rebuilds what depends on that custom kernel.
+Talos v1.13.x and v1.14.0–v1.14.1 do **not** include the fix. These Macs still hang
+at boot on those versions.
 
-Because the *stub* is the problem, a GCC kernel boots fine under **UKI/systemd-boot** —
-there's no need for GRUB or a version ladder. Point a node at this installer and
-`talosctl upgrade` it like any other node.
+## The real fix
 
-## What the build does
+This repo assumed Apple's EFI firmware rejected an LLD-linked kernel EFI stub. That
+assumption was wrong. The actual cause was a kernel bug, fixed by
+[siderolabs/pkgs@6c312e4](https://github.com/siderolabs/pkgs/commit/6c312e4)
+(patch `0018-efistub-x86-Fix-the-size-type-of-the-Apple-propertie.patch`, by
+Nicolas Brainez, also
+[submitted upstream](https://lore.kernel.org/linux-efi/20260928072832.25399-1-nicolas@brainez.net/)
+with `Cc: stable`):
+
+- The x86 EFI stub declares the size argument of the Apple device properties
+  protocol (`get_all()` and friends) as `u32`. The firmware actually uses a 64-bit
+  `UINTN`.
+- `retrieve_apple_device_properties()` passes a pointer to a 4-byte `u32` on the
+  stack. 64-bit Apple firmware writes 8 bytes through it and overwrites the stack
+  slot next to it.
+- With **clang** and `CONFIG_EFI_MIXED=n`, that slot holds the protocol pointer `p`.
+  The second `get_all()` call jumps through the corrupted pointer, and the Mac hangs
+  or powers off before printing anything.
+- **GCC** happens to leave padding in that slot, so the overwrite does no damage.
+  That is the only reason this repo's GCC-linked kernel booted. The problem was never
+  GNU ld compared to LLD.
+
+The patch declares the size as `unsigned long`. It shipped in Talos v1.14.2, which
+pins that pkgs commit. Tracking issues:
+[siderolabs/talos#13231](https://github.com/siderolabs/talos/issues/13231),
+[siderolabs/talos#13579](https://github.com/siderolabs/talos/issues/13579).
+
+---
+
+## Historical documentation
+
+Everything below describes the workaround as it was built, kept for reference. The
+workaround rebuilt Talos with a **GCC-linked** kernel (by dropping `LLVM: 1` from the
+kernel package in `siderolabs/pkgs`). It also rebuilt every extension that ships
+signed kernel modules against that kernel, then published an installer image and a
+USB ISO to GHCR.
+
+### What the build does
 
 1. **kernel** — clone `siderolabs/pkgs` at the exact commit the target Talos release
    pins, `sed` out `LLVM: 1`, `make kernel` → GHCR (`.../pkgs/kernel:<pkgs>-dirty`).
@@ -37,7 +80,7 @@ there's no need for GRUB or a version ladder. Point a node at this installer and
    - `kind: iso` → `metal-amd64.iso`, attached to a GitHub Release.
    - `kind: installer` → `ghcr.io/<owner>/talos-mac/installer:<talos-version>`.
 
-## Usage
+### Usage
 
 1. Fork/clone to GitHub. GHCR publishing uses the built-in `GITHUB_TOKEN`.
 2. Set `TALOS_VERSION` in `versions.env` (and the stock extension tags — the values the
@@ -60,7 +103,7 @@ export REGISTRY=ghcr.io/<owner>/talos-mac
 scripts/build.sh
 ```
 
-## Using the output
+### Using the output
 
 Fresh install: download `metal-amd64.iso` from the matching Release, `dd` it to a USB
 stick, boot the Mac holding ⌥ → **EFI Boot** → Talos maintenance mode, then apply your
@@ -74,9 +117,9 @@ talosctl -n <node-ip> upgrade \
 
 With talhelper, set the node's `talosImageURL` to `ghcr.io/<owner>/talos-mac/installer`
 (talhelper appends `:${talosVersion}`) so it tracks the version like any other node.
-Never point a T2 Mac at `factory.talos.dev` for v1.13+ — that's the hanging stock kernel.
+Never point a T2 Mac at `factory.talos.dev` for v1.13.x–v1.14.1 — those stock kernels hang. (v1.14.2+ is fixed; see above.)
 
-## How it works
+### How it works
 
 A few non-obvious things the pipeline handles:
 
@@ -94,7 +137,7 @@ A few non-obvious things the pipeline handles:
 - **Installer output.** `kind: installer` requires `outFormat: raw` (passthrough); an
   empty value decodes to `unknown` and the imager errors.
 
-## Layout
+### Layout
 
 ```
 versions.env                     one build's inputs (Renovate-tracked)
